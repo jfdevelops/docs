@@ -8,24 +8,33 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
+import { test } from 'vitest';
 import {
   checkDocs,
   scanMarkdown,
   slugifyHeading,
-} from '../src/check.mjs';
-import { loadConfig } from '../src/config.mjs';
+} from './check.js';
+import { loadConfig, type DocsOptions } from './config.js';
 import {
   buildDocsNavigation,
   parseFrontmatter,
   readReleasedVersions,
   versionStatus,
-} from '../src/manifest.mjs';
+} from './manifest.js';
 
 const V2 = 'docs/framework/react/v2';
 const V1 = 'docs/framework/react/v1';
 
-function page(title, order, body = '') {
+type DocsFixture = {
+  root: string;
+  files: Record<string, string>;
+  write: (relative: string, text: string) => void;
+  remove: (relative: string) => void;
+};
+
+type CheckResult = ReturnType<typeof checkDocs>;
+
+function page(title: string, order: number, body = '') {
   return `---\ntitle: ${title}\ndescription: A short description of ${title}.\norder: ${order}\n---\n\n${body}\n`;
 }
 
@@ -34,9 +43,9 @@ function page(title, order, body = '') {
  * change it before the checker runs. The core package is 2.1.0, so v2 is
  * current and v1 is previous.
  */
-function withDocs(change, run) {
+function withDocs<Result>(change: ((context: DocsFixture) => void) | undefined, run: (root: string, result: CheckResult) => Result) {
   const root = mkdtempSync(path.join(tmpdir(), 'check-docs-'));
-  const files = {
+  const files: Record<string, string> = {
     'jfdevelops.json': JSON.stringify({
       addons: [
         {
@@ -74,7 +83,7 @@ function withDocs(change, run) {
       '# Docs\n\nStart at [the topic](./framework/react/v2/guides/topic.md).\n',
     'docs/maintainers/notes.md': '# Notes\n',
   };
-  const context = {
+  const context: DocsFixture = {
     root,
     files,
     write(relative, text) {
@@ -111,11 +120,11 @@ function withDocs(change, run) {
   }
 }
 
-function codes(result) {
+function codes(result: CheckResult) {
   return result.errors.map((error) => error.code);
 }
 
-function assertFails(change, code) {
+function assertFails(change: (context: DocsFixture) => void, code: string) {
   withDocs(change, (_root, result) => {
     assert.ok(
       codes(result).includes(code),
@@ -268,7 +277,7 @@ test('rejects absolute and unsafe link schemes', () => {
     ['http://example.com', 'link-scheme'],
     ['mailto:a@example.com', 'link-scheme'],
     ['javascript:alert(1)', 'link-scheme'],
-  ]) {
+  ] as const) {
     assertFails((context) => {
       context.write(
         `${V2}/guides/topic.md`,
@@ -388,7 +397,7 @@ test('requires a language on code fences and closed fences', () => {
 });
 
 test('keeps embedded examples in sync with their fixtures', () => {
-  const block = (code) =>
+  const block = (code: string) =>
     `## Details\n\n\`\`\`ts example=v2/sample.ts\n${code}\n\`\`\``;
 
   withDocs(
@@ -625,9 +634,10 @@ test('builds docs.json and meta.json from the tree', () => {
         root,
       });
       const [framework] = manifest.frameworks;
-      const meta = (relative) =>
+      const meta = (relative: string) =>
         metaFiles.get(path.join(root, relative).split(path.sep).join('/'));
 
+      assert.ok(framework);
       assert.equal(manifest.library.id, 'react-layout');
       assert.equal(framework.id, 'react');
       assert.equal(framework.defaultVersion, 'v2');
@@ -642,7 +652,7 @@ test('builds docs.json and meta.json from the tree', () => {
           ['v1', 'previous', '1.1.0'],
         ],
       );
-      assert.deepEqual(framework.versions[0].navigation, [
+      assert.deepEqual(framework.versions[0]?.navigation, [
         {
           page: 'overview',
           title: 'Overview',
@@ -689,7 +699,7 @@ test('marks the generated reference without walking it', () => {
       });
 
       assert.deepEqual(result.errors, []);
-      assert.deepEqual(manifest.frameworks[0].versions[0].navigation.at(-1), {
+      assert.deepEqual(manifest.frameworks[0]?.versions[0]?.navigation.at(-1), {
         title: 'Reference',
         path: 'reference',
         generated: true,
@@ -727,7 +737,7 @@ test('reads options from jfdevelops.json, with overrides and defaults', () => {
       examples: 'tools/docs/examples',
     });
     assert.equal(loadConfig(root, { name: 'Other' }).name, 'Other');
-    assert.throws(() => loadConfig(root, { unknown: 'x' }), /Unknown docs option/);
+    assert.throws(() => loadConfig(root, { unknown: 'x' } as DocsOptions), /Unknown docs option/);
   });
 });
 

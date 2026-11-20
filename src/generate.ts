@@ -3,19 +3,21 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Application } from 'typedoc';
-import { loadConfig } from './config.mjs';
-import { listVersions, writeDocsNavigation } from './manifest.mjs';
+import { loadConfig, type DocsConfig } from './config.js';
+import { listVersions, writeDocsNavigation } from './manifest.js';
 
 const require = createRequire(import.meta.url);
 
-function toPosix(value) {
+// typedoc-plugin-markdown options; the plugin does not add them to TypeDoc's option types.
+const markdownOptions = { entryFileName: 'index', hidePageHeader: true, hidePageTitle: true, hideBreadcrumbs: true, useCodeBlocks: true };
 
+function toPosix(value: string) {
   return value.split(path.sep).join('/');
 }
 
-async function addPageMetadata(directory, isRoot = true) {
+async function addPageMetadata(directory: string, isRoot = true) {
   const entries = await readdir(directory, { withFileTypes: true });
-  const pages = [];
+  const pages: string[] = [];
 
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name, 'en'))) {
     const location = path.join(directory, entry.name);
@@ -52,11 +54,11 @@ async function addPageMetadata(directory, isRoot = true) {
 }
 
 /** The current version of each framework gets a generated API reference. */
-function referenceOutputs(root, config) {
+function referenceOutputs(root: string, config: DocsConfig) {
   const outputs = listVersions(root, config)
     .frameworks.flatMap((framework) => framework.versions)
     .map((version) => version.generatedReference)
-    .filter(Boolean);
+    .filter((output) => output !== null);
 
   if (outputs.length === 0) {
     throw new Error('No docs/framework/<framework>/v<major> directory matches the documented package major.');
@@ -65,18 +67,14 @@ function referenceOutputs(root, config) {
   return outputs;
 }
 
-async function convertReference(root, config, directory) {
+async function convertReference(root: string, config: DocsConfig, directory: string) {
   const app = await Application.bootstrapWithPlugins({
     plugin: [require.resolve('typedoc-plugin-markdown')],
     entryPoints: [toPosix(path.join(root, config.entry))],
     tsconfig: path.join(root, config.tsconfig),
     outputs: [{ name: 'markdown', path: directory }],
     readme: 'none',
-    entryFileName: 'index',
-    hidePageHeader: true,
-    hidePageTitle: true,
-    hideBreadcrumbs: true,
-    useCodeBlocks: true,
+    ...markdownOptions,
     excludePrivate: true,
     excludeProtected: true,
     excludeInternal: true,
@@ -100,7 +98,7 @@ async function convertReference(root, config, directory) {
  * Converts the entry point once into a temporary directory, then replaces each output. Each output gets
  * its own .gitignore, so the generated reference stays untracked without a version-specific root entry.
  */
-async function generateReference(root, config, outputs) {
+async function generateReference(root: string, config: DocsConfig, outputs: string[]) {
   const temporary = await mkdtemp(path.join(tmpdir(), 'jfdevelops-docs-'));
 
   try {
@@ -119,7 +117,7 @@ async function generateReference(root, config, outputs) {
 }
 
 /** Writes the API reference, docs/docs.json and every meta.json. */
-export async function generateDocs({ root, config = loadConfig(root), isReferenceSkipped = false }) {
+export async function generateDocs({ root, config = loadConfig(root), isReferenceSkipped = false }: { root: string; config?: DocsConfig; isReferenceSkipped?: boolean }) {
   if (!isReferenceSkipped) {
     await generateReference(root, config, referenceOutputs(root, config));
   }

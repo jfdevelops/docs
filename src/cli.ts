@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { checkDocs } from './check.mjs';
-import { loadConfig } from './config.mjs';
-import { generateDocs } from './generate.mjs';
+import { checkDocs } from './check.js';
+import { loadConfig, type DocsConfig, type DocsOptions } from './config.js';
+import { generateDocs } from './generate.js';
 
 const usage = `Usage: jfdevelops-docs <command> [options]
 
@@ -23,19 +23,21 @@ Options:
 
 Options default to the "docs" addon in jfdevelops.json.`;
 
-function readOverrides(values) {
-  const overrides = {};
+function readOverrides(values: DocsOptions) {
+  const overrides: DocsOptions = {};
 
-  for (const key of ['package', 'name', 'entry', 'tsconfig', 'examples']) {
-    if (values[key] !== undefined) {
-      overrides[key] = values[key];
+  for (const key of ['package', 'name', 'entry', 'tsconfig', 'examples'] as const) {
+    const value = values[key];
+
+    if (value !== undefined) {
+      overrides[key] = value;
     }
   }
 
   return overrides;
 }
 
-function runCheck(root, config) {
+function runCheck(root: string, config: DocsConfig) {
   const { errors, stats } = checkDocs({ root, config });
 
   if (errors.length > 0) {
@@ -86,7 +88,6 @@ async function main() {
 
       return 0;
     case 'check':
-
       return runCheck(root, config);
     default:
       console.error(`Unknown command "${command}".\n\n${usage}`);

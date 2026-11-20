@@ -6,12 +6,40 @@ import {
   statSync,
 } from 'node:fs';
 import path from 'node:path';
-import { loadConfig } from './config.mjs';
+import { loadConfig, type DocsConfig } from './config.js';
 import {
   buildDocsNavigation,
   listVersions,
   parseFrontmatter,
-} from './manifest.mjs';
+  type FrameworkDirectory,
+  type VersionDirectory,
+} from './manifest.js';
+
+export type DocsIssue = { code: string; file: string; message: string };
+export type DocsStats = { versions: number; pages: number; links: number; examples: number };
+export type Heading = { level: number; text: string; slug: string; line: number };
+export type Link = { image: boolean; text: string; target: string; line: number };
+export type Fence = { marker: string; language: string; info: string; example: string | undefined; line: number; lines: string[]; content: string };
+export type MarkdownScan = {
+  headings: Heading[];
+  links: Link[];
+  fences: Fence[];
+  problems: Array<{ code: string; line: number; message: string }>;
+};
+
+type CheckedVersion = VersionDirectory & { package: { name: string; endpointVersion: string | null } };
+type PageEntry = { id: string; file: string; full: string; order?: number };
+type LinkSource = { file: string; full: string };
+type CheckContext = {
+  root: string;
+  docsRoot: string;
+  examplesDir: string;
+  family: string;
+  library: string;
+  excluded: string[];
+  generatedReferences: string[];
+  slugCache: Map<string, Set<string>>;
+};
 
 export { parseFrontmatter };
 
@@ -51,7 +79,7 @@ const GENERATED_FILES = ['docs.json', 'meta.json'];
 const SEGMENT = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const MAX_SEGMENTS = 3;
 
-function issue(errors, code, file, message) {
+function issue(errors: DocsIssue[], code: string, file: string, message: string) {
   errors.push({
     code,
     file,
@@ -59,11 +87,15 @@ function issue(errors, code, file, message) {
   });
 }
 
-function toPosix(value) {
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function toPosix(value: string) {
   return value.split(path.sep).join('/');
 }
 
-function isInside(parent, child) {
+function isInside(parent: string, child: string) {
   const relative = path.relative(parent, child);
 
   return (
@@ -72,7 +104,7 @@ function isInside(parent, child) {
 }
 
 /** GitHub-style heading slug without the duplicate suffix. */
-export function slugifyHeading(text) {
+export function slugifyHeading(text: string) {
   return text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s_-]/gu, '')
@@ -80,7 +112,7 @@ export function slugifyHeading(text) {
     .replace(/\s/g, '-');
 }
 
-function plainHeading(text) {
+function plainHeading(text: string) {
   return text
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/`([^`]*)`/g, '$1')
@@ -88,7 +120,7 @@ function plainHeading(text) {
     .trim();
 }
 
-function stripInlineCode(line) {
+function stripInlineCode(line: string) {
   return line.replace(/`[^`]*`/g, (match) => ' '.repeat(match.length));
 }
 
@@ -96,28 +128,25 @@ function stripInlineCode(line) {
  * Walks a Markdown body and returns its headings, links, images, code fences
  * and any construct the contract rejects.
  */
-export function scanMarkdown(body) {
-  const result = {
+export function scanMarkdown(body: string): MarkdownScan {
+  const result: MarkdownScan = {
     headings: [],
     links: [],
     fences: [],
     problems: [],
   };
-  const seen = new Map();
+  const seen = new Map<string, number>();
   const lines = body.split('\n');
-  let fence = null;
+  let fence: Omit<Fence, 'content'> | null = null;
 
-  lines.forEach((rawLine, index) => {
+  for (const [index, rawLine] of lines.entries()) {
     const lineNumber = index + 1;
     const fenceMatch = /^\s*(`{3,}|~{3,})\s*(.*)$/.exec(rawLine);
 
     if (fence) {
-      if (
-        fenceMatch &&
-        fenceMatch[1][0] === fence.marker[0] &&
-        fenceMatch[1].length >= fence.marker.length &&
-        fenceMatch[2] === ''
-      ) {
+      const marker = fenceMatch?.[1] ?? '';
+
+      if (fenceMatch && marker[0] === fence.marker[0] && marker.length >= fence.marker.length && fenceMatch[2] === '') {
         result.fences.push({
           ...fence,
           content: fence.lines.join('\n'),
@@ -127,37 +156,37 @@ export function scanMarkdown(body) {
         fence.lines.push(rawLine);
       }
 
-      return;
+      continue;
     }
 
     if (fenceMatch) {
-      const info = fenceMatch[2].trim();
+      const info = (fenceMatch[2] ?? '').trim();
       const [language = '', ...rest] = info.split(/\s+/).filter(Boolean);
 
       fence = {
-        marker: fenceMatch[1],
+        marker: fenceMatch[1] ?? '',
         language,
         info,
         example: rest
           .map((part) => /^example=(.+)$/.exec(part)?.[1])
-          .find(Boolean),
+          .find((value) => value !== undefined),
         line: lineNumber,
         lines: [],
       };
 
-      return;
+      continue;
     }
 
     const heading = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(rawLine);
 
     if (heading) {
-      const text = plainHeading(heading[2]);
+      const text = plainHeading(heading[2] ?? '');
       const base = slugifyHeading(text);
       const count = seen.get(base) ?? 0;
 
       seen.set(base, count + 1);
       result.headings.push({
-        level: heading[1].length,
+        level: (heading[1] ?? '').length,
         text,
         slug: count === 0 ? base : `${base}-${count}`,
         line: lineNumber,
@@ -188,12 +217,12 @@ export function scanMarkdown(body) {
     )) {
       result.links.push({
         image: match[1] === '!',
-        text: match[2],
-        target: match[3],
+        text: match[2] ?? '',
+        target: match[3] ?? '',
         line: lineNumber,
       });
     }
-  });
+  }
 
   if (fence) {
     result.problems.push({
@@ -206,7 +235,7 @@ export function scanMarkdown(body) {
   return result;
 }
 
-function collectFiles(directory) {
+function collectFiles(directory: string): string[] {
   const entries = readdirSync(directory, {
     withFileTypes: true,
   });
@@ -218,10 +247,10 @@ function collectFiles(directory) {
   });
 }
 
-function loadPages(version, errors) {
+function loadPages(version: CheckedVersion, errors: DocsIssue[]) {
   const versionDir = version.full;
-  const pages = new Map();
-  const assets = new Set();
+  const pages = new Map<string, PageEntry>();
+  const assets = new Set<string>();
 
   if (!existsSync(versionDir) || !statSync(versionDir).isDirectory()) {
     issue(
@@ -308,7 +337,7 @@ function loadPages(version, errors) {
  * The current version follows the latest release, so its installs may be
  * unpinned. Older versions pin every package so a reader gets that major.
  */
-function checkInstall(specifier, version, where, errors) {
+function checkInstall(specifier: string, version: CheckedVersion, where: string, errors: DocsIssue[]) {
   const pinned = /@\d+\.\d+\.\d+$/.test(specifier);
   const unpinned = !/^(@[^/]+\/)?[^@]+@/.test(specifier);
   const core = version.package.name;
@@ -339,11 +368,11 @@ function checkInstall(specifier, version, where, errors) {
   }
 }
 
-function validatePage(page, version, context, errors) {
+function validatePage(page: PageEntry, version: CheckedVersion, context: CheckContext, errors: DocsIssue[]) {
   const text = readFileSync(page.full, 'utf8');
   const parsed = parseFrontmatter(text);
 
-  if (parsed.error) {
+  if (parsed.data === null) {
     issue(errors, 'page-frontmatter', page.file, parsed.error);
 
     return null;
@@ -362,8 +391,8 @@ function validatePage(page, version, context, errors) {
     }
   }
 
-  const title = data.title ?? '';
-  const description = data.description ?? '';
+  const title = data['title'] ?? '';
+  const description = data['description'] ?? '';
 
   if (title === '' || title.length > 80) {
     issue(
@@ -383,7 +412,7 @@ function validatePage(page, version, context, errors) {
     );
   }
 
-  if (!/^\d+$/.test(data.order ?? '')) {
+  if (!/^\d+$/.test(data['order'] ?? '')) {
     issue(
       errors,
       'page-frontmatter',
@@ -392,7 +421,7 @@ function validatePage(page, version, context, errors) {
     );
   }
 
-  const versionWord = /(^|[^\w.])(v\d+|react layout \d+)(?![\w.])/i;
+  const versionWord = new RegExp(`(^|[^\\w.])(v\\d+|${escapeRegExp(context.library)} \\d+)(?![\\w.])`, 'i');
 
   if (
     !page.id.endsWith('migration') &&
@@ -468,17 +497,17 @@ function validatePage(page, version, context, errors) {
     }
 
     if (fence.example) {
-      checkExample(fence, where, context, errors);
+      checkExample({ ...fence, example: fence.example }, where, context, errors);
     }
   }
 
   return {
-    order: Number(data.order),
+    order: Number(data['order']),
     scan,
   };
 }
 
-function checkExample(fence, where, context, errors) {
+function checkExample(fence: Fence & { example: string }, where: string, context: CheckContext, errors: DocsIssue[]) {
   const requested = fence.example;
 
   if (!context.examplesDir) {
@@ -535,7 +564,7 @@ function checkExample(fence, where, context, errors) {
   }
 }
 
-function resolveLink(link, page, context, errors, options) {
+function resolveLink(link: Link, page: LinkSource, context: CheckContext, errors: DocsIssue[], options: { allowExcluded?: boolean }) {
   const where = `${page.file}:${link.line}`;
   const target = link.target;
 
@@ -633,7 +662,7 @@ function resolveLink(link, page, context, errors, options) {
   }
 
   const relative = toPosix(path.relative(context.docsRoot, resolved));
-  const top = relative.split('/')[0];
+  const top = relative.split('/')[0] ?? '';
 
   if (!options.allowExcluded && context.excluded.includes(top)) {
     issue(
@@ -682,20 +711,22 @@ function resolveLink(link, page, context, errors, options) {
   };
 }
 
-function headingSlugsFor(full, cache) {
-  if (!cache.has(full)) {
-    const parsed = parseFrontmatter(readFileSync(full, 'utf8'));
-    const slugs = new Set(
-      scanMarkdown(parsed.body).headings.map((heading) => heading.slug),
-    );
+function headingSlugsFor(full: string, cache: Map<string, Set<string>>) {
+  const cached = cache.get(full);
 
-    cache.set(full, slugs);
+  if (cached) {
+    return cached;
   }
 
-  return cache.get(full);
+  const parsed = parseFrontmatter(readFileSync(full, 'utf8'));
+  const slugs = new Set(scanMarkdown(parsed.body).headings.map((heading) => heading.slug));
+
+  cache.set(full, slugs);
+
+  return slugs;
 }
 
-function checkLinks(page, scan, context, errors, options = {}) {
+function checkLinks(page: LinkSource, scan: MarkdownScan, context: CheckContext, errors: DocsIssue[], options: { allowExcluded?: boolean } = {}) {
   for (const link of scan.links) {
     const resolved = resolveLink(link, page, context, errors, options);
 
@@ -714,7 +745,7 @@ function checkLinks(page, scan, context, errors, options = {}) {
   }
 }
 
-function checkFile(display, full, context, errors) {
+function checkFile(display: string, full: string, context: CheckContext, errors: DocsIssue[]) {
   const scan = scanMarkdown(readFileSync(full, 'utf8'));
   const page = {
     file: display,
@@ -736,7 +767,7 @@ function checkFile(display, full, context, errors) {
  * docs/ holds README.md, framework/, maintainers/ and generated files.
  * framework/<name>/ holds only v<major> directories.
  */
-function checkLayout(docsRoot, frameworks, context, errors, stats) {
+function checkLayout(docsRoot: string, frameworks: FrameworkDirectory[], context: CheckContext, errors: DocsIssue[], stats: DocsStats) {
   for (const entry of readdirSync(docsRoot, {
     withFileTypes: true,
   })) {
@@ -800,8 +831,8 @@ function checkLayout(docsRoot, frameworks, context, errors, stats) {
   }
 }
 
-function checkOrders(collection, errors) {
-  const seen = new Map();
+function checkOrders(collection: { pages: Map<string, PageEntry> }, errors: DocsIssue[]) {
+  const seen = new Map<string, string>();
 
   for (const page of collection.pages.values()) {
     if (!Number.isInteger(page.order)) {
@@ -828,11 +859,11 @@ function checkOrders(collection, errors) {
  * companions. That is every package in the same npm scope, or, without a
  * scope, every package whose name starts with the documented package's name.
  */
-function packageFamily(name) {
+function packageFamily(name: string) {
   return name.startsWith('@') ? `${name.split('/')[0]}/` : name;
 }
 
-function isFamilyPackage(word, family) {
+function isFamilyPackage(word: string, family: string) {
   const name = word.replace(/(?<=.)@[^@/]*$/, '');
 
   return family.endsWith('/')
@@ -841,11 +872,11 @@ function isFamilyPackage(word, family) {
 }
 
 /** Runs every check. `root` is the repository root. */
-export function checkDocs({ root, config = loadConfig(root) } = {}) {
+export function checkDocs({ root, config = loadConfig(root) }: { root: string; config?: DocsConfig }) {
   const examplesDir = config.examples;
-  const errors = [];
+  const errors: DocsIssue[] = [];
   const docsRoot = path.join(root, 'docs');
-  const stats = {
+  const stats: DocsStats = {
     versions: 0,
     pages: 0,
     links: 0,
@@ -871,16 +902,17 @@ export function checkDocs({ root, config = loadConfig(root) } = {}) {
     root,
     config,
   });
-  const context = {
+  const context: CheckContext = {
     root,
     docsRoot,
     examplesDir,
     family: packageFamily(core.name),
+    library: config.name,
     excluded: EXCLUDED,
     generatedReferences: frameworks
       .flatMap((framework) => framework.versions)
       .map((version) => version.generatedReference)
-      .filter(Boolean),
+      .filter((directory) => directory !== null),
     slugCache: new Map(),
   };
 
@@ -899,7 +931,7 @@ export function checkDocs({ root, config = loadConfig(root) } = {}) {
 
   for (const framework of frameworks) {
     for (const version of framework.versions) {
-      const described = {
+      const described: CheckedVersion = {
         ...version,
         package: {
           name: core.name,

@@ -1,6 +1,6 @@
 {
   "name": "@jfdevelops/docs",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Generate and check versioned library docs: navigation, docs.json, and a TypeDoc API reference",
   "type": "module",
   "license": "MIT",

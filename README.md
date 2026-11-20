@@ -76,6 +76,28 @@ docs/
 
 Version status comes from the package major: that major is `current`, earlier ones are `previous`, `v0` is `legacy`, and later ones are `next`. Install commands in earlier majors must pin exact versions, with the documented package at that major's last release.
 
+Each install command is written once per package manager, in consecutive fences labeled `npm`, `pnpm`, `yarn` and `bun`:
+
+````markdown
+```npm
+npm i @acme/widgets
+```
+
+```pnpm
+pnpm add @acme/widgets
+```
+
+```yarn
+yarn add @acme/widgets
+```
+
+```bun
+bun add @acme/widgets
+```
+````
+
+The check validates versions in all four, and rejects install commands in an `sh` or `bash` fence. A docs site can render the four fences as tabs.
+
 Writing guidance lives in the `jf-docs` skill from `@jfdevelops/skills`.
 
 ## Development
